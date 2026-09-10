@@ -101,7 +101,13 @@ async function poll() {
   try {
     const s = await post("confederate_state");
     misses = 0;
-    health(true, s.session ? "On a call" : "Connected and on duty");
+    // Honest about whether a dial would actually ring THIS phone. It used to
+    // say "on duty" unconditionally, which was untrue for anyone standing by
+    // while a different confederate was rostered.
+    health(true, s.session ? "On a call"
+      : (s.will_be_used === false
+          ? "Connected — someone else is on duty"
+          : "Connected and ready"));
     render(s);
   } catch (e) {
     // Two misses before saying anything: one dropped poll on a phone network
