@@ -1,0 +1,171 @@
+<!doctype html>
+<html lang="en"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+<meta name="robots" content="noindex, nofollow">
+<title>Standing by</title>
+<style>
+  :root { --bg:#0a0a0c; --card:#16161a; --line:#26262c; --text:#f4f4f6; --dim:#8b8b95;
+          --live:#21d666; --warn:#ff9f0a; --stop:#ff453a; color-scheme: dark; }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  body { margin:0; background:var(--bg); color:var(--text);
+    font:16px/1.4 -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+    padding:max(12px, env(safe-area-inset-top)) 16px max(16px, env(safe-area-inset-bottom));
+    min-height:100dvh; display:flex; flex-direction:column; gap:14px; overscroll-behavior:none; }
+  .banner { border-radius:22px; padding:30px 20px; text-align:center; background:var(--card);
+            transition:background .12s linear; }
+  .banner.live { background:var(--live); }
+  .banner h1 { margin:0; font-size:34px; font-weight:800; letter-spacing:-.5px; }
+  .banner p { margin:6px 0 0; font-size:15px; font-weight:500; opacity:.72; }
+  .banner.live h1, .banner.live p { color:#04210f; }
+  .row { display:flex; align-items:center; gap:8px; font-size:15px; color:var(--dim); }
+  .dot { width:10px; height:10px; border-radius:50%; background:var(--warn); flex:none; }
+  .dot.ok { background:var(--live); }
+  .object { background:var(--card); border-radius:20px; padding:22px 16px; text-align:center; }
+  .object .label { font-size:12px; font-weight:700; letter-spacing:1.6px; color:var(--dim); }
+  .object .value { font-size:46px; font-weight:700; margin-top:6px; word-break:break-word; line-height:1.1; }
+  .object .value.empty { color:#3a3a42; }
+  textarea { width:100%; background:var(--card); color:var(--text); border:1px solid var(--line);
+             border-radius:16px; padding:12px; font:inherit; resize:none; min-height:110px; }
+  button { font:inherit; border:0; width:100%; }
+  .ready { height:74px; border-radius:18px; background:var(--live); color:#04210f; font-size:22px; font-weight:800; }
+  .ready[disabled] { background:#1b6b3c; color:#7fd3a2; }
+  .abort { height:54px; border-radius:16px; margin-top:12px; background:rgba(255,159,10,.14);
+           color:var(--warn); font-size:17px; font-weight:600; }
+  .slot { margin-top:auto; }
+  .slider { position:relative; height:64px; border-radius:999px; overflow:hidden;
+            background:rgba(255,69,58,.14); border:1px solid rgba(255,69,58,.42); touch-action:none; }
+  .slider span { position:absolute; inset:0; display:grid; place-items:center; color:var(--stop);
+                 font-weight:700; pointer-events:none; }
+  .knob { position:absolute; top:1px; left:1px; width:62px; height:60px; border-radius:50%;
+          background:var(--stop); display:grid; place-items:center; color:#fff; font-size:24px; }
+  .idle { text-align:center; color:var(--dim); padding:26px 0; font-size:19px; font-weight:600; }
+  .hidden { display:none !important; }
+</style>
+</head><body>
+  <div class="banner" id="banner">
+    <h1 id="state">Standing by</h1>
+    <p id="sub">Keep this page open</p>
+  </div>
+  <div class="row"><span class="dot" id="health"></span><span id="healthText">Connecting…</span></div>
+  <div id="idle" class="idle">Waiting for a call</div>
+  <div id="live" class="hidden">
+    <div class="object"><div class="label">OBJECT</div><div class="value empty" id="object">—</div></div>
+    <div style="margin-top:14px">
+      <button class="ready" id="ready">Ready</button>
+      <button class="abort" id="abort">Soft abort</button>
+    </div>
+  </div>
+  <textarea id="crib" placeholder="Your notes. Saved automatically."></textarea>
+  <div class="slot hidden" id="slot">
+    <div class="slider" id="slider"><span id="sliderLabel">Slide to drop</span><div class="knob" id="knob">✕</div></div>
+  </div>
+<script>
+const API = "https://jcchzfdjkvstsotoyyer.supabase.co/functions/v1";
+const TOKEN = new URLSearchParams(location.search).get("t") || location.hash.slice(1);
+const $ = (id) => document.getElementById(id);
+let sessionId = null, dropping = false, cribTimer = null, misses = 0, cribTouched = false;
+
+async function post(fn, body) {
+  const res = await fetch(API + "/" + fn, {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(Object.assign({ token: TOKEN }, body || {})),
+  });
+  if (!res.ok) throw new Error(String(res.status));
+  return res.json();
+}
+
+function render(s) {
+  const audible = s.audio_state === "briefing" && s.status === "connected";
+  $("banner").classList.toggle("live", audible);
+  $("state").textContent = audible ? "HE CAN HEAR YOU" : (s.session ? "MUTED" : "Standing by");
+  $("sub").textContent = audible ? "Brief him now" : (s.session ? "Nobody hears you" : "Keep this page open");
+  $("idle").classList.toggle("hidden", !!s.session);
+  $("live").classList.toggle("hidden", !s.session);
+  $("slot").classList.toggle("hidden", !s.session);
+  const obj = $("object");
+  obj.textContent = s.object || "—";
+  obj.classList.toggle("empty", !s.object);
+  $("ready").disabled = !!s.ready;
+  $("ready").textContent = s.ready ? "Ready sent" : "Ready";
+  if (!cribTouched && s.crib && $("crib").value !== s.crib) $("crib").value = s.crib;
+  if (s.session_id !== sessionId) {
+    sessionId = s.session_id; dropping = false; resetKnob();
+    $("sliderLabel").textContent = "Slide to drop";
+  }
+}
+
+function health(ok, text) { $("health").classList.toggle("ok", ok); $("healthText").textContent = text; }
+
+async function poll() {
+  try {
+    const s = await post("confederate_state");
+    misses = 0;
+    health(true, s.session ? "On a call" : "Connected and on duty");
+    render(s);
+  } catch (e) {
+    // Two misses before saying anything: one dropped poll on a phone network
+    // is normal, and flashing a warning every time is just noise.
+    if (++misses > 2) health(false, e.message === "403" ? "This link is no longer active" : "Reconnecting…");
+  }
+  setTimeout(poll, 700);
+}
+
+$("ready").onclick = async () => {
+  $("ready").disabled = true;
+  if (navigator.vibrate) navigator.vibrate(30);
+  try { await post("confederate_action", { action: "ready" }); } catch (e) { $("ready").disabled = false; }
+};
+$("abort").onclick = async () => {
+  if (navigator.vibrate) navigator.vibrate([20, 60, 20]);
+  try { await post("confederate_action", { action: "abort_soft" }); } catch (e) {}
+};
+$("crib").oninput = () => {
+  cribTouched = true;
+  clearTimeout(cribTimer);
+  cribTimer = setTimeout(() => post("confederate_action", { action: "crib", crib: $("crib").value }).catch(() => {}), 800);
+};
+
+// Slide, never a tap: he is holding the phone and gesturing while he talks,
+// and an accidental tap mid-briefing would end the routine.
+const slider = $("slider"), knob = $("knob");
+let dragging = false, startX = 0, offset = 0;
+function resetKnob() { offset = 0; knob.style.transform = "translateX(0)"; }
+function travel() { return slider.clientWidth - knob.clientWidth - 2; }
+knob.addEventListener("pointerdown", (e) => {
+  if (dropping) return;
+  dragging = true; startX = e.clientX; knob.setPointerCapture(e.pointerId);
+});
+knob.addEventListener("pointermove", (e) => {
+  if (!dragging) return;
+  offset = Math.max(0, Math.min(travel(), e.clientX - startX));
+  knob.style.transform = "translateX(" + offset + "px)";
+});
+knob.addEventListener("pointerup", async () => {
+  if (!dragging) return;
+  dragging = false;
+  if (offset >= travel() * 0.75) {
+    dropping = true;
+    knob.style.transform = "translateX(" + travel() + "px)";
+    $("sliderLabel").textContent = "Dropping…";
+    if (navigator.vibrate) navigator.vibrate(120);
+    try { await post("confederate_action", { action: "drop" }); } catch (e) {}
+  } else {
+    knob.style.transition = "transform .2s"; resetKnob();
+    setTimeout(() => knob.style.transition = "", 220);
+  }
+});
+
+if (!TOKEN) {
+  $("state").textContent = "No link";
+  $("sub").textContent = "Ask the performer to send you the link again";
+  health(false, "Not connected");
+} else {
+  if (navigator.wakeLock) navigator.wakeLock.request("screen").catch(() => {});
+  document.addEventListener("visibilitychange", () => {
+    if (!document.hidden && navigator.wakeLock) navigator.wakeLock.request("screen").catch(() => {});
+  });
+  poll();
+}
+</script>
+</body></html>
